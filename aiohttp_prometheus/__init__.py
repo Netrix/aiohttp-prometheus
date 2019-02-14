@@ -1,11 +1,12 @@
 from prometheus_client import Counter, Gauge, Histogram, CONTENT_TYPE_LATEST
 import time
 import asyncio
+import socket
 from aiohttp import web
 import prometheus_client
 
 
-def prom_middleware(app_name):
+def prom_middleware(app_name, hostname):
     @asyncio.coroutine
     def factory(app, handler):
         @asyncio.coroutine
@@ -13,13 +14,15 @@ def prom_middleware(app_name):
             try:
                 request['start_time'] = time.time()
                 request.app['REQUEST_IN_PROGRESS'].labels(
-                            app_name, request.path, request.method).inc()
+                    hostname, app_name, request.path, request.method).inc()
                 response = yield from handler(request)
                 resp_time = time.time() - request['start_time']
-                request.app['REQUEST_LATENCY'].labels(app_name, request.path).observe(resp_time)
-                request.app['REQUEST_IN_PROGRESS'].labels(app_name, request.path, request.method).dec()
+                request.app['REQUEST_LATENCY'].labels(
+                    hostname, app_name, request.path).observe(resp_time)
+                request.app['REQUEST_IN_PROGRESS'].labels(
+                    hostname, app_name, request.path, request.method).dec()
                 request.app['REQUEST_COUNT'].labels(
-                            app_name, request.method, request.path, response.status).inc()
+                    hostname, app_name, request.method, request.path, response.status).inc()
                 return response
             except Exception as ex:
                 raise
@@ -33,20 +36,21 @@ async def metrics(request):
     return resp
 
 
-def setup_metrics(app, app_name):
+def setup_metrics(app, app_name, hostname=None):
     app['REQUEST_COUNT'] = Counter(
-      'requests_total', 'Total Request Count',
-      ['app_name', 'method', 'endpoint', 'http_status']
+        'requests_total', 'Total Request Count',
+        ['hostname', 'app_name', 'method', 'endpoint', 'http_status']
     )
     app['REQUEST_LATENCY'] = Histogram(
         'request_latency_seconds', 'Request latency',
-        ['app_name', 'endpoint']
+        ['hostname', 'app_name', 'endpoint']
     )
 
     app['REQUEST_IN_PROGRESS'] = Gauge(
         'requests_in_progress_total', 'Requests in progress',
-        ['app_name', 'endpoint', 'method']
+        ['hostname', 'app_name', 'endpoint', 'method']
     )
 
-    app.middlewares.insert(0, prom_middleware(app_name))
+    hostname = hostname or socket.gethostname()
+    app.middlewares.insert(0, prom_middleware(app_name, hostname))
     app.router.add_get("/metrics", metrics)
